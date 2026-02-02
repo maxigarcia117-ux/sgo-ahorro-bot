@@ -10,7 +10,13 @@ SUPA_HEADERS = {
     "Content-Type": "application/json"
 }
 
-# 🔎 Qué buscamos y qué EAN tiene en tu base de datos
+# 🎭 Headers para engañar a MasOnline (User-Agent real)
+MAS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
 PRODUCTOS_BUSQUEDA = {
     "aceite natura": "7790272000840",
     "playadito": "7790310000351",
@@ -19,40 +25,49 @@ PRODUCTOS_BUSQUEDA = {
 
 def actualizar_precio(ean, precio, nombre):
     try:
+        # En Supabase, el ID de sucursal es "ch-bel" para ChangoMás Belgrano
         payload = {"ean": ean, "id_sucursal": "ch-bel", "valor": int(precio)}
         url = f"{SUPABASE_URL}/rest/v1/precios_sgo"
         r = httpx.post(url, headers=SUPA_HEADERS, json=payload)
-        if r.status_code == 201:
+        if r.status_code in [201, 200, 204]:
             print(f"✅ SGOAHORRO: {nombre} actualizado a ${precio}")
+        else:
+            print(f"⚠️ Supabase respondió: {r.status_code}")
     except Exception as e:
-        print(f"❌ Error subiendo a Supabase: {e}")
+        print(f"❌ Error Supabase: {e}")
 
 def buscar_en_masonline():
-    print("📡 Conectando con la central de datos de MasOnline...")
+    print("📡 Conectando con la API de MasOnline (Modo Invisible)...")
     
-    # Usamos la API de búsqueda directa de MasOnline
-    # El sc=13 es el código que suele usar ChangoMás para sucursales del interior
-    for nombre_busqueda, ean in PRODUCTOS_BUSQUEDA.items():
-        try:
-            api_url = f"https://www.masonline.com.ar/api/catalog_system/pub/products/search/{nombre_busqueda}?sc=13"
-            
-            with httpx.Client(timeout=20.0) as client:
-                response = client.get(api_url)
-                datos = response.json()
+    with httpx.Client(headers=MAS_HEADERS, timeout=30.0, follow_redirects=True) as client:
+        for nombre_busqueda, ean in PRODUCTOS_BUSQUEDA.items():
+            try:
+                # El sc=13 es clave para los precios de Santiago/interior
+                api_url = f"https://www.masonline.com.ar/api/catalog_system/pub/products/search/{nombre_busqueda}?sc=13"
                 
-                if datos:
-                    # Agarramos el primer resultado
-                    producto = datos[0]
-                    nombre_real = producto['productName']
-                    # Buscamos el precio en la estructura del JSON
-                    precio = producto['items'][0]['sellers'][0]['commertialOffer']['Price']
+                response = client.get(api_url)
+                
+                # Verificamos si la respuesta es una lista (que es lo que esperamos)
+                if response.status_code == 200:
+                    datos = response.json()
                     
-                    if precio > 0:
-                        actualizar_precio(ean, precio, nombre_real)
+                    if isinstance(datos, list) and len(datos) > 0:
+                        producto = datos[0]
+                        nombre_real = producto.get('productName', nombre_busqueda)
+                        # Buscamos el precio en la profundidad del JSON de VTEX
+                        try:
+                            precio = producto['items'][0]['sellers'][0]['commertialOffer']['Price']
+                            if precio > 0:
+                                actualizar_precio(ean, precio, nombre_real)
+                        except (KeyError, IndexError):
+                            print(f"⚠️ No pude encontrar el precio en los datos de: {nombre_busqueda}")
+                    else:
+                        print(f"⚠️ Producto no encontrado en catálogo: {nombre_busqueda}")
                 else:
-                    print(f"⚠️ No se encontró el producto: {nombre_busqueda}")
-        except Exception as e:
-            print(f"❌ Error buscando {nombre_busqueda}: {e}")
+                    print(f"❌ MasOnline denegó el acceso (Status {response.status_code})")
+                    
+            except Exception as e:
+                print(f"❌ Error técnico con {nombre_busqueda}: {e}")
 
 if __name__ == "__main__":
     buscar_en_masonline()
