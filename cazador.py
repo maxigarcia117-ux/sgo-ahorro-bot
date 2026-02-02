@@ -11,15 +11,23 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
 
-# 🔎 Mapeo Santiago
 PRODUCTOS_MAP = {
     "natura": "7790272000840",
     "playadito": "7790310000351",
     "blancaflor": "7790580402412"
 }
 
-def enviar_a_supabase(nombre_web, precio_texto):
+def enviar_a_supabase(texto_cuadro):
     try:
+        # Separamos el texto por líneas
+        lineas = [l.strip() for l in texto_cuadro.split('\n') if l.strip()]
+        if not lineas: return
+
+        # El nombre suele ser la primera o segunda línea
+        nombre_web = lineas[0]
+        # El precio es cualquier línea que tenga el "$"
+        precio_texto = next((l for l in lineas if "$" in l), "0")
+        
         solo_num = "".join(filter(str.isdigit, precio_texto))
         precio_final = int(solo_num) if solo_num else 0
         
@@ -32,12 +40,11 @@ def enviar_a_supabase(nombre_web, precio_texto):
 
         if ean_detectado and precio_final > 0:
             payload = {"ean": ean_detectado, "id_sucursal": "ch-bel", "valor": precio_final}
-            r = httpx.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json=payload)
-            print(f"✅ ¡ACTUALIZADO! -> {nombre_web} | ${precio_final}")
+            httpx.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json=payload)
+            print(f"✅ ¡SUBIDO! -> {nombre_web} | ${precio_final}")
         else:
-            # Esto nos ayudará a ver qué nombres está leyendo realmente
-            if precio_final > 0:
-                print(f"🔎 Leí: '{nombre_web}' pero no está en mi lista de Santiago.")
+            # ESTO ES LO QUE VEREMOS EN LOS LOGS PARA SABER QUÉ PASA
+            print(f"👀 Vi esto: '{nombre_web}' | Precio detectado: ${precio_final}")
 
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -52,21 +59,15 @@ try:
     driver.get("https://www.masonline.com.ar/almacen")
     time.sleep(15)
     
-    driver.execute_script("window.scrollBy(0, 2000);")
+    driver.execute_script("window.scrollBy(0, 1500);")
     time.sleep(5)
 
-    # Buscamos los contenedores de productos
-    items = driver.find_elements(By.CSS_SELECTOR, ".vtex-product-summary-2-x-container")
-    print(f"📊 Analizando {len(items)} productos...")
+    # Selector más general de cuadritos
+    items = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary-2-x-container']")
+    print(f"📊 Analizando {len(items)} cuadritos...")
 
     for item in items:
-        try:
-            # Intentamos sacar el nombre y el precio por separado para que no sea 'Desconocido'
-            nombre = item.find_element(By.CSS_SELECTOR, "[class*='productBrandName']").text
-            precio = item.find_element(By.CSS_SELECTOR, "[class*='currencyContainer']").text
-            enviar_a_supabase(nombre, precio)
-        except:
-            continue
+        enviar_a_supabase(item.text)
 
 finally:
     driver.quit()
