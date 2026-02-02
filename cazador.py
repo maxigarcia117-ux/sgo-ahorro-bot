@@ -1,3 +1,4 @@
+import os
 import time
 import httpx
 from selenium import webdriver
@@ -5,11 +6,9 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
-# --- CONFIGURACIÓN DE TU APP (SgoAhorro) ---
-# Estos datos los sacás de tu configuración de Supabase
-SUPABASE_URL = "https://cuedfwadmfooxyvafory.supabase.co"
-SUPABASE_KEY = "TU_KEY_ANON_AQUÍ" # Pegá la misma que usás en CodePen
-TABLA_NOMBRE = "precios_sgo" # Asegurate que sea el nombre de tu tabla en Supabase
+# 🔐 Conexión con los Secretos de GitHub
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -18,62 +17,65 @@ HEADERS = {
     "Prefer": "return=minimal"
 }
 
-def enviar_a_supabase(nombre, precio_texto):
+# Diccionario simple para asignar EANs (puedes ampliarlo luego)
+PRODUCTOS_EAN = {
+    "Aceite Natura 1.5L": "7790272000840",
+    "Yerba Playadito 1kg": "7790310000351",
+    "Harina Blancaflor 1kg": "7790580402412"
+}
+
+def enviar_a_supabase(nombre_web, precio_texto):
     try:
-        # Convertimos "$ 2.500,50" en un número entero simple 2500
+        # 1. Limpiar precio
         solo_numeros = "".join(filter(str.isdigit, precio_texto))
         precio_final = int(solo_numeros) if solo_numeros else 0
         
-        # Este objeto debe coincidir con las columnas de tu tabla en Supabase
-        payload = {
-            "nombre": nombre,
-            "precio": precio_final,
-            "sucursal": "ChangoMas_Sgo",
-            "fecha": "now()"
-        }
+        # 2. Buscar EAN (si el nombre coincide con nuestra lista)
+        # Si no está en la lista, usamos un EAN genérico o saltamos
+        ean = next((v for k, v in PRODUCTOS_EAN.items() if k in nombre_web), None)
         
-        with httpx.Client() as client:
-            r = client.post(f"{SUPABASE_URL}/rest/v1/{TABLA_NOMBRE}", headers=HEADERS, json=payload)
-            if r.status_code == 201:
-                print(f"💾 Guardado en DB: {nombre} -> ${precio_final}")
-            else:
-                print(f"⚠️ Error al subir: {r.text}")
+        if ean:
+            payload = {
+                "ean": ean,
+                "id_sucursal": "ch-bel", # ChangoMás Belgrano según tu SQL
+                "valor": precio_final
+                # fecha_actualizacion se pone sola por el default de tu DB
+            }
+            
+            with httpx.Client() as client:
+                client.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json=payload)
+                print(f"✅ Actualizado: {nombre_web} -> ${precio_final}")
     except Exception as e:
-        print(f"❌ Error procesando {nombre}: {e}")
+        print(f"❌ Error: {e}")
 
-# --- INICIO DEL ROBOT ---
-print("🚀 SGO-AHORRO: Iniciando actualización automática...")
-
+# --- CONFIGURACIÓN CHROME INVISIBLE ---
 options = webdriver.ChromeOptions()
-options.add_argument("--headless") # 🫥 MODO INVISIBLE
+options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 try:
-    categorias = ["almacen", "bebidas", "limpieza"]
-    for cat in categorias:
-        print(f"📡 Escaneando categoría: {cat.upper()}...")
-        driver.get(f"https://www.masonline.com.ar/{cat}")
-        time.sleep(7) # Esperamos que la web cargue los datos
-        
-        # Scrolleamos para despertar a la web
-        driver.execute_script("window.scrollBy(0, 1000);")
-        time.sleep(2)
+    print("📡 Iniciando rastreo en MasOnline...")
+    driver.get("https://www.masonline.com.ar/almacen")
+    time.sleep(10)
+    
+    driver.execute_script("window.scrollBy(0, 2000);")
+    time.sleep(3)
 
-        productos = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary']")
-        for p in productos:
-            try:
-                lineas = p.text.split('\n')
-                # Buscamos el nombre (línea 1 o 2) y el precio (la que tenga $)
-                if len(lineas) > 2 and "$" in p.text:
-                    nombre = lineas[1]
-                    precio = next((l for l in lineas if "$" in l), "0")
-                    enviar_a_supabase(nombre, precio)
-            except:
+    productos = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary']")
+    for p in productos:
+        lineas = p.text.split('\n')
+        if len(lineas) > 2 and "$" in p.text:
+            enviar_a_supabase(lineas[1], lineas[2])
+
+finally:
+    driver.quit()
+    print("🏁 Robot terminó su turno.")
                 continue
 
 finally:
     print("\n✅ ¡Proceso terminado! Revisá tu panel de Supabase.")
+
     driver.quit()
