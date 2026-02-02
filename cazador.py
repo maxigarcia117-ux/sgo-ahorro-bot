@@ -1,60 +1,59 @@
 import os
-import time
 import httpx
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
-# 🔐 Configuración
+# 🔐 Configuración Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
+SUPA_HEADERS = {
+    "apikey": SUPABASE_KEY, 
+    "Authorization": f"Bearer {SUPABASE_KEY}", 
+    "Content-Type": "application/json"
+}
 
-PRODUCTOS_MAP = {"natura": "7790272000840", "playadito": "7790310000351", "blancaflor": "7790580402412"}
+# 🔎 Qué buscamos y qué EAN tiene en tu base de datos
+PRODUCTOS_BUSQUEDA = {
+    "aceite natura": "7790272000840",
+    "playadito": "7790310000351",
+    "blancaflor": "7790580402412"
+}
 
-def enviar_a_supabase(nombre, precio):
+def actualizar_precio(ean, precio, nombre):
     try:
-        precio_int = int("".join(filter(str.isdigit, precio)))
-        ean = next((v for k, v in PRODUCTOS_MAP.items() if k in nombre.lower()), None)
-        if ean and precio_int > 0:
-            httpx.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json={"ean": ean, "id_sucursal": "ch-bel", "valor": precio_int})
-            print(f"✅ ¡LOGRADO! {nombre}: ${precio_int}")
-    except: pass
+        payload = {"ean": ean, "id_sucursal": "ch-bel", "valor": int(precio)}
+        url = f"{SUPABASE_URL}/rest/v1/precios_sgo"
+        r = httpx.post(url, headers=SUPA_HEADERS, json=payload)
+        if r.status_code == 201:
+            print(f"✅ SGOAHORRO: {nombre} actualizado a ${precio}")
+    except Exception as e:
+        print(f"❌ Error subiendo a Supabase: {e}")
 
-options = webdriver.ChromeOptions()
-options.add_argument("--headless")
-options.add_argument("--window-size=1920,1080") # Ventana grande
-options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
-try:
-    print("🚀 Entrando a la góndola...")
-    driver.get("https://www.masonline.com.ar/almacen/aceites-y-vinagres/aceites")
+def buscar_en_masonline():
+    print("📡 Conectando con la central de datos de MasOnline...")
     
-    # ⏬ Scroll progresivo para cargar productos
-    for i in range(5):
-        driver.execute_script(f"window.scrollTo(0, {i * 400});")
-        time.sleep(3)
+    # Usamos la API de búsqueda directa de MasOnline
+    # El sc=13 es el código que suele usar ChangoMás para sucursales del interior
+    for nombre_busqueda, ean in PRODUCTOS_BUSQUEDA.items():
+        try:
+            api_url = f"https://www.masonline.com.ar/api/catalog_system/pub/products/search/{nombre_busqueda}?sc=13"
+            
+            with httpx.Client(timeout=20.0) as client:
+                response = client.get(api_url)
+                datos = response.json()
+                
+                if datos:
+                    # Agarramos el primer resultado
+                    producto = datos[0]
+                    nombre_real = producto['productName']
+                    # Buscamos el precio en la estructura del JSON
+                    precio = producto['items'][0]['sellers'][0]['commertialOffer']['Price']
+                    
+                    if precio > 0:
+                        actualizar_precio(ean, precio, nombre_real)
+                else:
+                    print(f"⚠️ No se encontró el producto: {nombre_busqueda}")
+        except Exception as e:
+            print(f"❌ Error buscando {nombre_busqueda}: {e}")
 
-    # Esperamos que aparezca al menos un cuadro de producto
-    try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CLASS_NAME, "vtex-product-summary-2-x-container")))
-    except:
-        print("⚠️ Tiempo de espera agotado, intentando leer lo que haya...")
-
-    cuadritos = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary-2-x-container']")
-    print(f"📊 Analizando {len(cuadritos)} productos encontrados...")
-
-    for c in cuadritos:
-        texto = c.text
-        if texto and "$" in texto:
-            lineas = texto.split('\n')
-            enviar_a_supabase(lineas[0], next((l for l in lineas if "$" in l), "0"))
-
-finally:
-    driver.quit()
-    print("🏁 Fin del reporte.")
+if __name__ == "__main__":
+    buscar_en_masonline()
+    print("🏁 Proceso terminado.")
