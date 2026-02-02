@@ -6,71 +6,71 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 
-# 🔐 Configuración de Supabase desde Secrets de GitHub
+# 🔐 Configuración
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
 
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=minimal"
-}
-
-# Mapeo de EANs según tu base de datos actual
+# 🔎 Palabras clave para Santiago (macheo flexible)
 PRODUCTOS_MAP = {
-    "Aceite Natura": "7790272000840",
-    "Yerba Playadito": "7790310000351",
-    "Harina Blancaflor": "7790580402412"
+    "natura": "7790272000840",
+    "playadito": "7790310000351",
+    "blancaflor": "7790580402412"
 }
 
-def enviar_a_supabase(nombre_web, precio_texto):
+def enviar_a_supabase(texto_completo):
+    # El robot va a intentar encontrar el precio y el nombre en todo el bloque de texto
     try:
-        solo_numeros = "".join(filter(str.isdigit, precio_texto))
-        precio_final = int(solo_numeros) if solo_numeros else 0
-        
-        # Buscamos si el nombre de la web coincide con nuestro catálogo
-        ean = next((ean for nombre, ean in PRODUCTOS_MAP.items() if nombre.lower() in nombre_web.lower()), None)
-        
-        if ean:
-            payload = {
-                "ean": ean,
-                "id_sucursal": "ch-bel", # ChangoMás Belgrano
-                "valor": precio_final
-            }
-            
-            with httpx.Client() as client:
-                url = f"{SUPABASE_URL}/rest/v1/precios_sgo"
-                r = client.post(url, headers=HEADERS, json=payload)
-                if r.status_code == 201:
-                    print(f"✅ SGOAHORRO Actualizado: {nombre_web} -> ${precio_final}")
-    except Exception as e:
-        print(f"⚠️ Error: {e}")
+        lineas = texto_completo.split('\n')
+        nombre_encontrado = "Desconocido"
+        precio_final = 0
+        ean_detectado = None
 
-# --- ROBOT INVISIBLE PARA GITHUB ---
+        for linea in lineas:
+            linea_min = linea.lower()
+            # 1. Buscamos el EAN por palabra clave
+            for clave, ean in PRODUCTOS_MAP.items():
+                if clave in linea_min:
+                    ean_detectado = ean
+                    nombre_encontrado = linea
+            
+            # 2. Buscamos el precio
+            if "$" in linea:
+                solo_num = "".join(filter(str.isdigit, linea))
+                if solo_num: precio_final = int(solo_num)
+
+        if ean_detectado and precio_final > 0:
+            payload = {"ean": ean_detectado, "id_sucursal": "ch-bel", "valor": precio_final}
+            url = f"{SUPABASE_URL}/rest/v1/precios_sgo"
+            r = httpx.post(url, headers=HEADERS, json=payload)
+            print(f"✅ ¡ENCONTRADO Y SUBIDO! -> {nombre_encontrado} | ${precio_final}")
+        else:
+            # Esto es lo que nos va a decir qué está fallando
+            print(f"❓ Vi esto pero no lo subí: {nombre_encontrado} | Precio: {precio_final}")
+
+    except Exception as e:
+        print(f"❌ Error interno: {e}")
+
+# --- INICIO ---
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 try:
-    print("📡 Iniciando rastreo en MasOnline Santiago...")
+    print("🚀 Entrando a MasOnline...")
     driver.get("https://www.masonline.com.ar/almacen")
-    time.sleep(10)
+    time.sleep(15) # Le damos tiempo de sobra para cargar
     
+    # Bajamos un poco para que aparezcan los productos
     driver.execute_script("window.scrollBy(0, 1500);")
-    time.sleep(3)
+    time.sleep(5)
 
-    productos = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary']")
-    for p in productos:
-        try:
-            lineas = p.text.split('\n')
-            if len(lineas) > 2 and "$" in p.text:
-                enviar_a_supabase(lineas[1], lineas[2])
-        except:
-            continue
+    items = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary']")
+    print(f"📊 El robot detectó {len(items)} cuadritos de productos.")
+
+    for item in items:
+        enviar_a_supabase(item.text)
+
 finally:
     driver.quit()
-    print("🏁 Robot finalizó.")
+    print("🏁 Fin del reporte.")
