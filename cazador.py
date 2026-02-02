@@ -19,55 +19,59 @@ PRODUCTOS_MAP = {
 
 def enviar_a_supabase(texto_cuadro):
     try:
-        # Separamos el texto por líneas
-        lineas = [l.strip() for l in texto_cuadro.split('\n') if l.strip()]
-        if not lineas: return
-
-        # El nombre suele ser la primera o segunda línea
-        nombre_web = lineas[0]
-        # El precio es cualquier línea que tenga el "$"
-        precio_texto = next((l for l in lineas if "$" in l), "0")
-        
-        solo_num = "".join(filter(str.isdigit, precio_texto))
-        precio_final = int(solo_num) if solo_num else 0
-        
-        nombre_min = nombre_web.lower()
+        texto_min = texto_cuadro.lower()
         ean_detectado = None
         for clave, ean in PRODUCTOS_MAP.items():
-            if clave in nombre_min:
+            if clave in texto_min:
                 ean_detectado = ean
                 break
 
-        if ean_detectado and precio_final > 0:
-            payload = {"ean": ean_detectado, "id_sucursal": "ch-bel", "valor": precio_final}
-            httpx.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json=payload)
-            print(f"✅ ¡SUBIDO! -> {nombre_web} | ${precio_final}")
-        else:
-            # ESTO ES LO QUE VEREMOS EN LOS LOGS PARA SABER QUÉ PASA
-            print(f"👀 Vi esto: '{nombre_web}' | Precio detectado: ${precio_final}")
+        if ean_detectado:
+            lineas = texto_cuadro.split('\n')
+            precio_texto = next((l for l in lineas if "$" in l), "0")
+            solo_num = "".join(filter(str.isdigit, precio_texto))
+            precio_final = int(solo_num) if solo_num else 0
 
+            if precio_final > 0:
+                payload = {"ean": ean_detectado, "id_sucursal": "ch-bel", "valor": precio_final}
+                httpx.post(f"{SUPABASE_URL}/rest/v1/precios_sgo", headers=HEADERS, json=payload)
+                print(f"✅ SANTIAGO DETECTADO -> {ean_detectado} | ${precio_final}")
     except Exception as e:
         print(f"❌ Error: {e}")
 
 # --- INICIO ---
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
+# Importante: permitir geolocalización
+options.add_argument("--enable-features=NetworkServiceInProcess")
+
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 try:
-    print("🚀 Entrando a MasOnline...")
-    driver.get("https://www.masonline.com.ar/almacen")
-    time.sleep(15)
+    # 📍 TRUCO MAESTRO: Forzamos las coordenadas de Santiago del Estero
+    # Estas son coordenadas aproximadas cerca del ChangoMás de Belgrano
+    params = {
+        "latitude": -27.7833,
+        "longitude": -64.2667,
+        "accuracy": 100
+    }
+    driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
+    print("🌍 Coordenadas fijadas en Santiago del Estero.")
+
+    urls = [
+        "https://www.masonline.com.ar/almacen/aceites-y-vinagres/aceites",
+        "https://www.masonline.com.ar/almacen/infusiones/yerba-mate"
+    ]
     
-    driver.execute_script("window.scrollBy(0, 1500);")
-    time.sleep(5)
+    for url in urls:
+        driver.get(url)
+        time.sleep(15) # Damos tiempo a que la web lea la ubicación simulada
+        driver.execute_script("window.scrollBy(0, 1000);")
+        time.sleep(3)
 
-    # Selector más general de cuadritos
-    items = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary-2-x-container']")
-    print(f"📊 Analizando {len(items)} cuadritos...")
-
-    for item in items:
-        enviar_a_supabase(item.text)
+        items = driver.find_elements(By.CSS_SELECTOR, "[class*='vtex-product-summary-2-x-container']")
+        for item in items:
+            enviar_a_supabase(item.text)
 
 finally:
     driver.quit()
